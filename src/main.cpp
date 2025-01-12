@@ -22,7 +22,7 @@
 #define WORK_PACKAGE "1178"
 #define GW_TYPE "00"
 #define FIRMWARE_UPDATE_DATE "241121" // Format: yymmdd
-#define DEVICE_SERIAL "0002"
+#define DEVICE_SERIAL "9999"
 #define DEVICE_ID WORK_PACKAGE GW_TYPE FIRMWARE_UPDATE_DATE DEVICE_SERIAL
 
 #define HB_INTERVAL 10*1000
@@ -66,6 +66,7 @@ CRGB leds[NUM_LEDS];
 //Wifi and MQTT Instance
 WiFiClient espClient;
 PubSubClient client(espClient);
+WiFiManager wm;
 
 //FreeRTOS Task instance
 TaskHandle_t networkTaskHandle;
@@ -82,7 +83,7 @@ TaskHandle_t wifiResetTaskHandle;
 
 // WiFi Reset Button
 #define WIFI_RESET_BUTTON_PIN 35
-#define TXB6_PIN 34 // Pin for ammonia sensor
+// #define TXB6_PIN 34 // Pin for ammonia sensor
 
 //WiFi Reset Flag
 bool wifiResetFlag = false;
@@ -242,9 +243,8 @@ void wifiResetTask(void *param) {
           leds[0] = CRGB::Green;
           FastLED.show();
 
-          WiFiManager wifiManager;
-          wifiManager.resetSettings();  // Clear previous settings
-          wifiManager.autoConnect("DMA_MC_Setup"); // Start AP for new configuration
+          wm.resetSettings();  // Clear previous settings
+          wm.autoConnect("DMA_MC_Setup"); // Start AP for new configuration
 
           DEBUG_PRINTLN("New WiFi credentials set, Restarting...");
           ESP.restart();  // Restart after WiFi configuration
@@ -314,17 +314,14 @@ void mainTask(void *param) {
 
 
 void setup() {
-  // Serial Monitor buad rate
-  // pinMode(LED_PIN, OUTPUT);
-  // digitalWrite(LED_PIN, HIGH);
-  // delay(2000);
-  // digitalWrite(LED_PIN, LOW);
 
   Serial.begin(115200);
 
   Serial.print("Device ID: ");
   Serial.println(DEVICE_ID);
   delay(1000);
+
+  
 
   // LED setup
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);

@@ -2,24 +2,22 @@
 #include <WiFi.h>
 #include <WiFiManager.h>  // WiFiManager library
 #include <PubSubClient.h>
-#include <FastLED.h>
-
-WiFiManager wm;
-String savedSSID = "";
+// #include <FastLED.h>
 
 // Configuration Section
+#define Fast_LED false
 #define DEBUG_MODE true
 #define DEBUG_PRINT(x)  if (DEBUG_MODE) { Serial.print(x); }
 #define DEBUG_PRINTLN(x) if (DEBUG_MODE) { Serial.println(x); }
 
-#define WORK_PACKAGE "1178"
+#define WORK_PACKAGE "1165"
 #define GW_TYPE "00"
-#define FIRMWARE_UPDATE_DATE "241121" 
-#define DEVICE_SERIAL "0002"
+#define FIRMWARE_UPDATE_DATE "250208" 
+#define DEVICE_SERIAL "0001"
 #define DEVICE_ID WORK_PACKAGE GW_TYPE FIRMWARE_UPDATE_DATE DEVICE_SERIAL
 
-#define HB_INTERVAL 100*1000
-#define DATA_INTERVAL 10*15*1000
+#define HB_INTERVAL 30*1000
+#define DATA_INTERVAL 15*1000
 
 // WiFi and MQTT reconnection time config
 #define WIFI_ATTEMPT_COUNT 30
@@ -38,12 +36,15 @@ int mqttAttemptCount = MQTT_ATTEMPT_COUNT;
 const char* mqtt_server = "broker2.dma-bd.com";
 const char* mqtt_user = "broker2";
 const char* mqtt_password = "Secret!@#$1234";
-const char* mqtt_topic = "DMA/MC/PUB";
+const char* mqtt_topic = "DMA/GPS/PUB";
 
+#if Fast_LED
 #define DATA_PIN 4
 #define NUM_LEDS 1
 CRGB leds[NUM_LEDS];
+#endif
 
+WiFiManager wm;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
@@ -52,7 +53,6 @@ TaskHandle_t mainTaskHandle;
 TaskHandle_t wifiResetTaskHandle;
 
 #define WIFI_RESET_BUTTON_PIN 35
-#define TXB6_PIN 34 
 bool wifiResetFlag = false;
 
 // Function to reconnect to WiFi
@@ -86,8 +86,10 @@ void reconnectWiFi() {
 
 void reconnectMQTT() {
   if (!client.connected()) {
+    #if Fast_LED
     leds[0] = CRGB::Yellow;
     FastLED.show();
+    #endif
 
     char clientId[24];
     snprintf(clientId, sizeof(clientId), "dma_wm_%04X%04X%04X", random(0xffff), random(0xffff), random(0xffff));
@@ -96,9 +98,13 @@ void reconnectMQTT() {
       DEBUG_PRINTLN("Attempting MQTT connection...");
       if (client.connect(clientId, mqtt_user, mqtt_password)) {
         DEBUG_PRINTLN("MQTT connected");
+
+        #if Fast_LED
         leds[0] = CRGB::Black;
         FastLED.show();
+        #endif
         char topic[48];
+
         snprintf(topic, sizeof(topic), "%s/%s", mqtt_topic, DEVICE_ID);
         client.subscribe(topic);
       } else {
@@ -133,15 +139,8 @@ void networkTask(void *param) {
         reconnectMQTT();
       }
     } else {
-      // Print the status if saved SSID is found or not
-      if (savedSSID.length() > 0) {
-        DEBUG_PRINTLN("Saved SSID found: " + savedSSID);
-      } else {
-        DEBUG_PRINTLN("Saved SSID not found. Attempting to connect...");
-      }
       reconnectWiFi();
     }
-
     client.loop();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
@@ -152,8 +151,11 @@ void wifiResetTask(void *param) {
     if (digitalRead(WIFI_RESET_BUTTON_PIN) == LOW) {
       unsigned long pressStartTime = millis();
       DEBUG_PRINTLN("Button Pressed....");
+
+      #if Fast_LED
       leds[0] = CRGB::Blue;
       FastLED.show();
+      #endif
 
       while (digitalRead(WIFI_RESET_BUTTON_PIN) == LOW) {
         if (millis() - pressStartTime >= 5000) {
@@ -167,8 +169,10 @@ void wifiResetTask(void *param) {
         vTaskDelay(pdMS_TO_TICKS(100));
       }
     } else {
+      #if Fast_LED
       leds[0] = CRGB::Black;
       FastLED.show();
+      #endif
     }
 
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -184,11 +188,15 @@ void mainTask(void *param) {
         char hb_data[50];
         snprintf(hb_data, sizeof(hb_data), "%s,wifi_connected", DEVICE_ID);
         client.publish(mqtt_topic, hb_data);
+        #if Fast_LED
         leds[0] = CRGB::Blue;
         FastLED.show();
+        #endif
         vTaskDelay(pdMS_TO_TICKS(1000));
+        #if Fast_LED
         leds[0] = CRGB::Black;
         FastLED.show();
+        #endif
       } else {
         DEBUG_PRINTLN("Failed to publish Heartbeat on MQTT");
       }
@@ -197,11 +205,15 @@ void mainTask(void *param) {
     static unsigned long last_data_send_time = 0;
     if (millis() - last_data_send_time >= DATA_INTERVAL) {
       last_data_send_time = millis();
+      #if Fast_LED
       leds[0] = CRGB::Green;
       FastLED.show();
+      #endif
       vTaskDelay(pdMS_TO_TICKS(1000));
+      #if Fast_LED
       leds[0] = CRGB::Black;
       FastLED.show();
+      #endif
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
@@ -211,19 +223,12 @@ void setup() {
   Serial.begin(115200);
   DEBUG_PRINT("Device ID: ");
   DEBUG_PRINTLN(DEVICE_ID);
-  // savedSSID = wm.getWiFiSSID();
-  // DEBUG_PRINTLN(savedSSID);
-
-  // Check if the saved SSID is retrieved
-  // if (savedSSID.length() > 0) {
-  //   DEBUG_PRINTLN("Found saved SSID: " + savedSSID);
-  // } else {
-  //   DEBUG_PRINTLN("No saved SSID found.");
-  // }
-
+  
+  #if Fast_LED
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
   leds[0] = CRGB::Black;
   FastLED.show();
+  #endif
 
   pinMode(WIFI_RESET_BUTTON_PIN, INPUT_PULLUP);
 

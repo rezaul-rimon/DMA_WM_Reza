@@ -1,8 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiManager.h>  // WiFiManager library
 #include <PubSubClient.h>
-// #include <FastLED.h>
+#include <HardwareSerial.h>
 
 // Configuration Section
 #define Fast_LED false
@@ -16,230 +15,350 @@
 #define DEVICE_SERIAL "0001"
 #define DEVICE_ID WORK_PACKAGE GW_TYPE FIRMWARE_UPDATE_DATE DEVICE_SERIAL
 
-#define HB_INTERVAL 30*1000
-#define DATA_INTERVAL 15*1000
+#define HB_INTERVAL 5*60*1000
+#define DATA_INTERVAL 1*60*1000
 
 // WiFi and MQTT reconnection time config
 #define WIFI_ATTEMPT_COUNT 30
 #define WIFI_ATTEMPT_DELAY 1000
-#define WIFI_WAIT_COUNT 60
-#define WIFI_WAIT_DELAY 1000
 #define MAX_WIFI_ATTEMPTS 2
 #define MQTT_ATTEMPT_COUNT 10
 #define MQTT_ATTEMPT_DELAY 5000
 
-int wifiAttemptCount = WIFI_ATTEMPT_COUNT;
-int wifiWaitCount = WIFI_WAIT_COUNT;
-int maxWifiAttempts = MAX_WIFI_ATTEMPTS;
-int mqttAttemptCount = MQTT_ATTEMPT_COUNT;
-
+const char* ssid = "DMA-IR-Bluster";
+const char* password = "dmabd987";
 const char* mqtt_server = "broker2.dma-bd.com";
 const char* mqtt_user = "broker2";
 const char* mqtt_password = "Secret!@#$1234";
-const char* mqtt_topic = "DMA/GPS/PUB";
+const char* mqtt_data_topic = "DMA/GPS/PUB";
+const char* mqtt_sub_topic = "DMA/GPS/SUB";
+const char* mqtt_hb_topic = "DMA/GPS/HB";
 
-#if Fast_LED
-#define DATA_PIN 4
-#define NUM_LEDS 1
-CRGB leds[NUM_LEDS];
-#endif
-
-WiFiManager wm;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-TaskHandle_t networkTaskHandle;
-TaskHandle_t mainTaskHandle;
-TaskHandle_t wifiResetTaskHandle;
-
-#define WIFI_RESET_BUTTON_PIN 35
+#define A9G_PIN 15
 bool wifiResetFlag = false;
 
-// Function to reconnect to WiFi
+HardwareSerial A9G(2);  // UART2: RX=16, TX=17
+
 void reconnectWiFi() {
-  // digitalWrite(LED_PIN, HIGH);
-  if (WiFi.status() != WL_CONNECTED) {
-    if (wifiAttemptCount > 0) {
-      DEBUG_PRINTLN("Attempting WiFi connection...");
-      WiFi.begin();  // Use saved credentials
-      wifiAttemptCount--;
-      DEBUG_PRINTLN("Remaining WiFi attempts: " + String(wifiAttemptCount));
-      // vTaskDelay(WIFI_ATTEMPT_DELAY / portTICK_PERIOD_MS);
-      vTaskDelay(pdMS_TO_TICKS(WIFI_ATTEMPT_DELAY));
-    } else if (wifiWaitCount > 0) {
-      wifiWaitCount--;
-      DEBUG_PRINTLN("WiFi wait... retrying in a moment");
-      DEBUG_PRINTLN("Remaining WiFi wait time: " + String(wifiWaitCount) + " seconds");
-      vTaskDelay(pdMS_TO_TICKS(WIFI_WAIT_DELAY));
-    } else {
-      wifiAttemptCount = WIFI_ATTEMPT_COUNT;
-      wifiWaitCount = WIFI_WAIT_COUNT;
-      maxWifiAttempts--;
-      if (maxWifiAttempts <= 0) {
-        DEBUG_PRINTLN("Max WiFi attempt cycles exceeded, restarting...");
-        ESP.restart();
-      }
+    if (WiFi.status() != WL_CONNECTED) {
+        DEBUG_PRINTLN("Attempting WiFi connection...");
+        WiFi.begin(ssid, password);
+        int attempt = 0;
+        while (WiFi.status() != WL_CONNECTED && attempt < WIFI_ATTEMPT_COUNT) {
+            vTaskDelay(pdMS_TO_TICKS(WIFI_ATTEMPT_DELAY));
+            attempt++;
+            DEBUG_PRINT(".");
+        }
+        DEBUG_PRINTLN("");
+        if (WiFi.status() == WL_CONNECTED) {
+            DEBUG_PRINTLN("WiFi Connected!");
+        } else {
+            DEBUG_PRINTLN("WiFi Connection Failed, Restarting...");
+            ESP.restart();
+        }
     }
-  }
 }
 
-
 void reconnectMQTT() {
-  if (!client.connected()) {
-    #if Fast_LED
-    leds[0] = CRGB::Yellow;
-    FastLED.show();
-    #endif
+    if (!client.connected()) {
+        char clientId[24];
+        snprintf(clientId, sizeof(clientId), "dma_ss_%04X%04X%04X", random(0xffff), random(0xffff), random(0xffff));
 
-    char clientId[24];
-    snprintf(clientId, sizeof(clientId), "dma_wm_%04X%04X%04X", random(0xffff), random(0xffff), random(0xffff));
-
-    if (mqttAttemptCount > 0) {
-      DEBUG_PRINTLN("Attempting MQTT connection...");
-      if (client.connect(clientId, mqtt_user, mqtt_password)) {
-        DEBUG_PRINTLN("MQTT connected");
-
-        #if Fast_LED
-        leds[0] = CRGB::Black;
-        FastLED.show();
-        #endif
-        char topic[48];
-
-        snprintf(topic, sizeof(topic), "%s/%s", mqtt_topic, DEVICE_ID);
-        client.subscribe(topic);
-      } else {
-        DEBUG_PRINTLN("MQTT connection failed");
-        mqttAttemptCount--;
-        vTaskDelay(pdMS_TO_TICKS(MQTT_ATTEMPT_DELAY));
-      }
-    } else {
-      DEBUG_PRINTLN("Max MQTT attempts exceeded, restarting...");
-      ESP.restart();
+        for (int attempt = 0; attempt < MQTT_ATTEMPT_COUNT; attempt++) {
+            DEBUG_PRINTLN("Attempting MQTT connection...");
+            if (client.connect(clientId, mqtt_user, mqtt_password)) {
+                DEBUG_PRINTLN("MQTT connected");
+                client.subscribe(mqtt_sub_topic);
+                return;
+            }
+            vTaskDelay(pdMS_TO_TICKS(MQTT_ATTEMPT_DELAY));
+        }
+        DEBUG_PRINTLN("Max MQTT attempts exceeded, restarting...");
+        ESP.restart();
     }
-  }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String message;
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-
-  DEBUG_PRINTLN("Message arrived on topic: " + String(topic));
-  DEBUG_PRINTLN("Message content: " + message);
+    String message;
+    for (unsigned int i = 0; i < length; i++) {
+        message += (char)payload[i];
+    }
+    DEBUG_PRINTLN("Message arrived: " + message);
 }
 
 void networkTask(void *param) {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin();
+    WiFi.mode(WIFI_STA);
+    reconnectWiFi();
+    client.setServer(mqtt_server, 1883);
+    client.setCallback(mqttCallback);
 
-  for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      if (!client.connected()) {
-        reconnectMQTT();
-      }
-    } else {
-      reconnectWiFi();
-    }
-    client.loop();
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-}
-
-void wifiResetTask(void *param) {
-  for (;;) {
-    if (digitalRead(WIFI_RESET_BUTTON_PIN) == LOW) {
-      unsigned long pressStartTime = millis();
-      DEBUG_PRINTLN("Button Pressed....");
-
-      #if Fast_LED
-      leds[0] = CRGB::Blue;
-      FastLED.show();
-      #endif
-
-      while (digitalRead(WIFI_RESET_BUTTON_PIN) == LOW) {
-        if (millis() - pressStartTime >= 5000) {
-          DEBUG_PRINTLN("5 seconds holding time reached, starting WiFiManager...");
-          vTaskSuspend(networkTaskHandle);
-          vTaskSuspend(mainTaskHandle);
-          wm.resetSettings();
-          wm.autoConnect("DMA_MC_Setup");
-          ESP.restart();
+    for (;;) {
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!client.connected()) {
+                reconnectMQTT();
+            }
+        } else {
+            reconnectWiFi();
         }
+        client.loop();
         vTaskDelay(pdMS_TO_TICKS(100));
-      }
-    } else {
-      #if Fast_LED
-      leds[0] = CRGB::Black;
-      FastLED.show();
-      #endif
     }
+}
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+/*
+void mainTask(void *param) {
+  bool a9g_ok = false;
+  String gpsData = "";
+
+  // Function to initialize A9G with retry
+  auto initA9G = [&]() -> bool {
+      DEBUG_PRINTLN("Initializing A9G...");
+      A9G.begin(115200, SERIAL_8N1, 16, 17);
+      vTaskDelay(pdMS_TO_TICKS(3000));
+
+      // Check if A9G responds
+      A9G.println("AT");
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      if (A9G.available() && A9G.readString().indexOf("OK") != -1) {
+          DEBUG_PRINTLN("A9G is OK");
+          A9G.println("AT+GPS=1");   // Enable GPS
+          vTaskDelay(pdMS_TO_TICKS(1000));
+          A9G.println("AT+GPSRD=1"); // Start GPS data read
+          return true;
+      }
+
+      DEBUG_PRINTLN("A9G failed to initialize!");
+      return false;
+  };
+
+  // Try to initialize A9G
+  a9g_ok = initA9G();
+
+  for (;;) {
+      // A9G Auto-Recovery (Check every 30 seconds)
+      static unsigned long last_a9g_check = 0;
+      if (millis() - last_a9g_check >= 30000) {  
+          last_a9g_check = millis();
+          A9G.println("AT");
+          vTaskDelay(pdMS_TO_TICKS(500));
+          if (!A9G.available() || A9G.readString().indexOf("OK") == -1) {
+              DEBUG_PRINTLN("A9G stopped responding! Reinitializing...");
+              a9g_ok = initA9G();
+          }
+      }
+
+      // Read and Process GPS Data
+      if (A9G.available()) {
+          String gpsRawData = A9G.readStringUntil('\n');
+          if (gpsRawData.startsWith("+GPSRD:$GNGGA")) { // Extract only GPSRD data
+              gpsData = gpsRawData;
+              DEBUG_PRINTLN("Extracted GPS Data: " + gpsData);
+          }
+      }
+
+      // Send Heartbeat Every HB_INTERVAL
+      static unsigned long last_hb_send_time = 0;
+      if (millis() - last_hb_send_time >= HB_INTERVAL) {
+          last_hb_send_time = millis();
+          if (client.connected()) {
+              char hb_data[50];
+              snprintf(hb_data, sizeof(hb_data), "%s,wifi_connected", DEVICE_ID);
+              client.publish(mqtt_hb_topic, hb_data);
+              DEBUG_PRINTLN("Heartbeat sent to MQTT");
+          } else {
+              DEBUG_PRINTLN("Failed to publish Heartbeat on MQTT");
+          }
+      }
+
+      // Send GPS Data Every DATA_INTERVAL
+      static unsigned long last_data_send_time = 0;
+      if (millis() - last_data_send_time >= DATA_INTERVAL) {
+          last_data_send_time = millis();
+          if (client.connected() && gpsData.length() > 0) {
+              char data[100];
+              snprintf(data, sizeof(data), "%s,%s", DEVICE_ID, gpsData.c_str());
+              client.publish(mqtt_data_topic, data);
+              DEBUG_PRINTLN("Data sent to MQTT: " + gpsData);
+          } else {
+              DEBUG_PRINTLN("Failed to publish Data on MQTT");
+          }
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(1000));  // Run every second
   }
 }
+*/
+
+/*
+void mainTask(void *param) {
+  // Initialize A9G only once before the loop
+  A9G.begin(115200, SERIAL_8N1, 16, 17);
+  DEBUG_PRINTLN("Initializing A9G...");
+  vTaskDelay(pdMS_TO_TICKS(3000));
+  A9G.println("AT");
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  A9G.println("AT+GPS=1");
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  A9G.println("AT+GPSRD=1");
+
+  String gpsData = "";
+
+  for (;;) {
+      // Read GPS Data Every Second
+      // if (A9G.available()) {
+      //     gpsData = A9G.readStringUntil('\n');  // Continuously update GPS data
+      //     DEBUG_PRINTLN("GPS Data: " + gpsData);
+      // }
+      if (A9G.available()) {
+        String gpsRawData = A9G.readStringUntil('\n');
+        if (gpsRawData.startsWith("+GPSRD:$GNGGA")) { // Extract only GPSRD data
+            gpsData = gpsRawData;
+            DEBUG_PRINTLN("Extracted GPS Data: " + gpsData);
+        }
+    }
+    else{
+      //Physical Restart A9G Via Power Cut
+      digitalWrite(A9G_PIN, HIGH);
+      vTaskDelay(pdMS_TO_TICKS(5000));
+      digitalWrite(A9G_PIN, LOW);
+      vTaskDelay(pdMS_TO_TICKS(2000));
+
+      A9G.begin(115200, SERIAL_8N1, 16, 17);
+      DEBUG_PRINTLN("Initializing A9G...");
+      vTaskDelay(pdMS_TO_TICKS(3000));
+      A9G.println("AT");
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      A9G.println("AT+GPS=1");
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      A9G.println("AT+GPSRD=1");
+    }
+
+      // Send Heartbeat Every HB_INTERVAL
+      static unsigned long last_hb_send_time = 0;
+      if (millis() - last_hb_send_time >= HB_INTERVAL) {
+          last_hb_send_time = millis();
+          if (client.connected()) {
+              char hb_data[50];
+              snprintf(hb_data, sizeof(hb_data), "%s,wifi_connected", DEVICE_ID);
+              client.publish(mqtt_hb_topic, hb_data);
+              DEBUG_PRINTLN("Heartbeat sent to MQTT");
+          } else {
+              DEBUG_PRINTLN("Failed to publish Heartbeat on MQTT");
+          }
+      }
+
+      // Send Data Every DATA_INTERVAL
+      static unsigned long last_data_send_time = 0;
+      if (millis() - last_data_send_time >= DATA_INTERVAL) {
+          last_data_send_time = millis();
+          if (client.connected()) {
+              char data[100];
+              snprintf(data, sizeof(data), "%s,%s", DEVICE_ID, gpsData.c_str());  // Use latest GPS data
+              client.publish(mqtt_data_topic, data);
+              DEBUG_PRINTLN("Data sent to MQTT: " + gpsData);
+          } else {
+              DEBUG_PRINTLN("Failed to publish Data on MQTT");
+          }
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(5000));  // Run every second
+  }
+}
+*/
 
 void mainTask(void *param) {
-  for (;;) {
-    static unsigned long last_hb_send_time = 0;
-    if (millis() - last_hb_send_time >= HB_INTERVAL) {
-      last_hb_send_time = millis();
-      if (client.connected()) {
-        char hb_data[50];
-        snprintf(hb_data, sizeof(hb_data), "%s,wifi_connected", DEVICE_ID);
-        client.publish(mqtt_topic, hb_data);
-        #if Fast_LED
-        leds[0] = CRGB::Blue;
-        FastLED.show();
-        #endif
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        #if Fast_LED
-        leds[0] = CRGB::Black;
-        FastLED.show();
-        #endif
-      } else {
-        DEBUG_PRINTLN("Failed to publish Heartbeat on MQTT");
-      }
-    }
+  A9G.begin(115200, SERIAL_8N1, 16, 17);
+  DEBUG_PRINTLN("Initializing A9G...");
+  vTaskDelay(pdMS_TO_TICKS(3000));
+  A9G.println("AT");
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  A9G.println("AT+GPS=1");
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  A9G.println("AT+GPSRD=1");
 
-    static unsigned long last_data_send_time = 0;
-    if (millis() - last_data_send_time >= DATA_INTERVAL) {
-      last_data_send_time = millis();
-      #if Fast_LED
-      leds[0] = CRGB::Green;
-      FastLED.show();
-      #endif
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      #if Fast_LED
-      leds[0] = CRGB::Black;
-      FastLED.show();
-      #endif
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000));
+  String gpsData = "";
+  int a9g_fail_count = 0;  // Count failures before resetting
+
+  for (;;) {
+      // Read GPS Data When Available
+      if (A9G.available()) {
+          String gpsRawData = A9G.readStringUntil('\n');
+          if (gpsRawData.startsWith("+GPSRD:$GNGGA")) {
+              gpsData = gpsRawData;
+              DEBUG_PRINTLN("Extracted GPS Data: " + gpsData);
+          }
+          a9g_fail_count = 0;  // Reset failure count on success
+      } else {
+          a9g_fail_count++;  // Increment failure count
+          DEBUG_PRINTLN("A9G Not Responding")
+          if (a9g_fail_count > 6) {  // Reset only if failed 12 times (~30s)
+              DEBUG_PRINTLN("A9G unresponsive! Restarting...");
+              digitalWrite(A9G_PIN, HIGH);
+              vTaskDelay(pdMS_TO_TICKS(5000));
+              digitalWrite(A9G_PIN, LOW);
+              vTaskDelay(pdMS_TO_TICKS(2000));
+
+              A9G.begin(115200, SERIAL_8N1, 16, 17);
+              DEBUG_PRINTLN("Reinitializing A9G...");
+              vTaskDelay(pdMS_TO_TICKS(3000));
+
+              A9G.println("AT");
+              vTaskDelay(pdMS_TO_TICKS(1000));
+              if (A9G.available() && A9G.readString().indexOf("OK") != -1) {
+                  A9G.println("AT+GPS=1");
+                  vTaskDelay(pdMS_TO_TICKS(1000));
+                  A9G.println("AT+GPSRD=1");
+                  a9g_fail_count = 0;  // Reset failure count after restart
+              } else {
+                  DEBUG_PRINTLN("A9G failed to respond after restart!");
+              }
+          }
+      }
+
+      // Send Heartbeat Every HB_INTERVAL
+      static unsigned long last_hb_send_time = 0;
+      if (millis() - last_hb_send_time >= HB_INTERVAL) {
+          last_hb_send_time = millis();
+          if (client.connected()) {
+              char hb_data[50];
+              snprintf(hb_data, sizeof(hb_data), "%s,wifi_connected", DEVICE_ID);
+              client.publish(mqtt_hb_topic, hb_data);
+              DEBUG_PRINTLN("Heartbeat sent to MQTT");
+          } else {
+              DEBUG_PRINTLN("Failed to publish Heartbeat on MQTT");
+          }
+      }
+
+      // Send Data Every DATA_INTERVAL
+      static unsigned long last_data_send_time = 0;
+      if (millis() - last_data_send_time >= DATA_INTERVAL) {
+          last_data_send_time = millis();
+          if (client.connected()) {
+              char data[100];
+              snprintf(data, sizeof(data), "%s,%s", DEVICE_ID, gpsData.c_str());
+              client.publish(mqtt_data_topic, data);
+              DEBUG_PRINTLN("Data sent to MQTT: " + gpsData);
+          } else {
+              DEBUG_PRINTLN("Failed to publish Data on MQTT");
+          }
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(5000));  // Run every 5 seconds
   }
 }
 
+
 void setup() {
-  Serial.begin(115200);
-  DEBUG_PRINT("Device ID: ");
-  DEBUG_PRINTLN(DEVICE_ID);
-  
-  #if Fast_LED
-  FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
-  leds[0] = CRGB::Black;
-  FastLED.show();
-  #endif
-
-  pinMode(WIFI_RESET_BUTTON_PIN, INPUT_PULLUP);
-
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(mqttCallback);
-
-  xTaskCreatePinnedToCore(networkTask, "Network Task", 8*1024, NULL, 1, &networkTaskHandle, 0);
-  xTaskCreatePinnedToCore(mainTask, "Main Task", 16*1024, NULL, 1, &mainTaskHandle, 1);
-  xTaskCreatePinnedToCore(wifiResetTask, "WiFi Reset Task", 8*1024, NULL, 1, &wifiResetTaskHandle, 1);
+    Serial.begin(115200);
+    DEBUG_PRINT("Device ID: ");
+    DEBUG_PRINTLN(DEVICE_ID);
+    pinMode(A9G_PIN, OUTPUT);
+    digitalWrite(A9G_PIN, LOW);
+    xTaskCreatePinnedToCore(networkTask, "Network Task", 8*1024, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(mainTask, "Main Task", 16*1024, NULL, 1, NULL, 1);
 }
 
-void loop(){
-
-}
+void loop() { }

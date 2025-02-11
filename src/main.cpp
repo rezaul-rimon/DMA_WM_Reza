@@ -10,9 +10,9 @@
 #define DEBUG_PRINT(x)  if (DEBUG_MODE) { Serial.print(x); }
 #define DEBUG_PRINTLN(x) if (DEBUG_MODE) { Serial.println(x); }
 
-#define WORK_PACKAGE "1165"
-#define GW_TYPE "00"
-#define FIRMWARE_UPDATE_DATE "250208" 
+#define WORK_PACKAGE "1102"
+#define GW_TYPE "01"
+#define FIRMWARE_UPDATE_DATE "250211" 
 #define DEVICE_SERIAL "0001"
 #define DEVICE_ID WORK_PACKAGE GW_TYPE FIRMWARE_UPDATE_DATE DEVICE_SERIAL
 
@@ -36,7 +36,9 @@ int mqttAttemptCount = MQTT_ATTEMPT_COUNT;
 const char* mqtt_server = "broker2.dma-bd.com";
 const char* mqtt_user = "broker2";
 const char* mqtt_password = "Secret!@#$1234";
-const char* mqtt_topic = "DMA/GPS/PUB";
+const char* mqtt_hb_topic = "DMA/SmartSwitch/HB";
+const char* mqtt_pub_topic = "DMA/SmartSwitch/PUB";
+const char* mqtt_sub_topic = "DMA/SmartSwitch/SUB";
 
 #if Fast_LED
 #define DATA_PIN 4
@@ -52,7 +54,7 @@ TaskHandle_t networkTaskHandle;
 TaskHandle_t mainTaskHandle;
 TaskHandle_t wifiResetTaskHandle;
 
-#define WIFI_RESET_BUTTON_PIN 35
+#define WIFI_RESET_BUTTON_PIN 0
 bool wifiResetFlag = false;
 
 // Function to reconnect to WiFi
@@ -105,7 +107,7 @@ void reconnectMQTT() {
         #endif
         char topic[48];
 
-        snprintf(topic, sizeof(topic), "%s/%s", mqtt_topic, DEVICE_ID);
+        snprintf(topic, sizeof(topic), "%s/%s", mqtt_sub_topic, DEVICE_ID);
         client.subscribe(topic);
       } else {
         DEBUG_PRINTLN("MQTT connection failed");
@@ -187,7 +189,8 @@ void mainTask(void *param) {
       if (client.connected()) {
         char hb_data[50];
         snprintf(hb_data, sizeof(hb_data), "%s,wifi_connected", DEVICE_ID);
-        client.publish(mqtt_topic, hb_data);
+        client.publish(mqtt_hb_topic, hb_data);
+        DEBUG_PRINTLN("Heartbeat sent Successfully");
         #if Fast_LED
         leds[0] = CRGB::Blue;
         FastLED.show();
